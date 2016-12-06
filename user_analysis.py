@@ -119,7 +119,6 @@ class UserAnalysis:
             models['SVM'] = SVC(kernel='linear', C=1)
             models['DecisionTree'] = tree.DecisionTreeClassifier()
             models['RandomForest'] = RandomForestClassifier(n_estimators=100)
-
             #Using feature selection by idf
             sorted_ind = numpy.argsort(-tfidf.idf_)
             #Keep top k% of the features
@@ -150,20 +149,34 @@ class UserAnalysis:
                 print ('User id not provided')
                 return
             print ('Predict for user with id %s' % user_id)
-            SVM_model = pickle.load(open('model.pickle', 'rb'))
+            model_path = os.path.join(self.home_dir, 'model.pickle')
+            if os.path.isfile(model_path):
+                model = pickle.load(open(model_path, 'rb'))
+            else:
+                model = SVC(kernel='linear', C=1, probability=True)
+                model.fit(feature_mat, labels)
+                pickle.dump(model, open(model_path, 'wb'))
             api = self.get_tweet_api()
-            user_profile = api.lookup_users(user_ids=[user_id])
+            try:
+                user_profile = api.lookup_users(user_ids=[user_id])
+            except Exception as e:
+                print ('Cannot download user information, message: ' + e.message)
+                print ('Predict based on prior probability: 0.22 Politician, 0.31 Trader, and 0.47 Journalist')
+                return
+            
             file_path = os.path.join(self.tweet_dir, '%s_%s.csv' % (user_profile[0].screen_name, user_id))
             self.get_all_tweets(user_profile[0].screen_name, file_path, api)
             df_tweet = pandas.read_csv(file_path, dtype=str)
             if df_tweet.shape[0] == 0:
                 print ('Cannot download tweets from this user')
+                print ('Predict based on prior probability: 0.22 Politician, 0.31 Trader, and 0.47 Journalist')
+                return
             else:
                 user_tweets = ' '.join(df_tweet.text[df_tweet.text.notnull()].tolist())
                 user_tweets = self.preprocess_text(user_tweets)
             
-            user_feature = tfidf.fit_transform(user_tweets)
-            predicted = SVM_model.predict_proba(user_feature)
+            user_feature = tfidf.transform([user_tweets])
+            predicted = model.predict_proba(user_feature)
             print ('Prediction result of this user is: %.2f Politician, %.2f Trader, and %.2f Journalist' % (predicted[0][0], predicted[0][1], predicted[0][2]))
             return
 if __name__ == '__main__':
@@ -176,4 +189,3 @@ if __name__ == '__main__':
     (options, args) = optparser.parse_args()
     user = UserAnalysis(options.home_dir, options.tweet_dir)
     user.prediction_analysis(options.mode, options.user_id)
-
