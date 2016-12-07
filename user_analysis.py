@@ -80,24 +80,20 @@ class UserAnalysis:
 
     def preprocess_text(self, text):
         text = preprocessor.clean(text).lower()
-        #Remove non-english words
-#        stop_words = set(stopwords.words('english'))
-#        word_tokens = word_tokenize(text)
-#        filtered_sentence = [w for w in word_tokens if not (w in stop_words or w in string.punctuation)]
         regex = re.compile('[%s]' % re.escape(string.punctuation))
         text = regex.sub('', text)
         en_dict = enchant.Dict('en-US')
         text = ' '.join([w if en_dict.check(w) and not w.isdigit() else '' for w in text.split(' ')  if w != ''])
         return text
     
-    #Find the  most representative terms for each class
-    def find_best_terms(self):
+    def create_feature_matrix(self):
+        #Load tweets and create the feature matrix for all users
         api = self.get_tweet_api()
         user_labels = pandas.read_csv(os.path.join(self.home_dir, 'userid_labels_screenname.csv'), dtype=str)
         user_labels = user_labels.loc[user_labels.screen_name.notnull(), :]
         self.category_corpus = dict()
         def get_corpus(df_users):
-            all_users_tweets = ''
+            all_users_tweets = []
             for ind, row in df_users.iterrows():
                 try:
                     file_path = os.path.join(self.tweet_dir, '%s_%s.csv' % (row.screen_name, row.sns_id))
@@ -108,58 +104,62 @@ class UserAnalysis:
                     if df_tweet.shape[0] > 0:
                         user_tweets = ' '.join(df_tweet.text[df_tweet.text.notnull()].tolist())
                         user_tweets = self.preprocess_text(user_tweets)
-                        all_users_tweets += ' ' + user_tweets
+                        all_users_tweets.append(user_tweets)
                 except Exception as e:
                     print ('Error %s, message: %s' % (row.screen_name, e.message))
 
             self.category_corpus[df_users.Category.iloc[0]] = all_users_tweets
         
+        #Method 2: Category-based method 
         user_labels.groupby('Category').apply(get_corpus)
         categories = list(self.category_corpus.keys())
-        tfidf = TfidfVectorizer(min_df=1)
-        feature_mat = tfidf.fit_transform(list(self.category_corpus.values())).toarray()
+        tfidf = TfidfVectorizer(min_df=1, sublinear_tf=True, stop_words='english')
+        categories_tweets = [' '.join(t) for t in self.category_corpus.values()]
+        feature_mat_cat = tfidf.fit_transform(categories_tweets).toarray()
+        pickle.dump(tfidf, open('tfidf_catbased.pickle', 'wb'))
+
         terms = numpy.array(tfidf.get_feature_names())
         #Find the terms that appear in only 1 single Category
-        unique_terms_in_cat = numpy.sum(feature_mat, axis=0) == numpy.max(feature_mat, axis=0)
+        unique_terms_in_cat = numpy.sum(feature_mat_cat, axis=0) == numpy.max(feature_mat_cat, axis=0)
         #Only keep the scores of the unique features
         for i in range(len(categories)):
-            feature_mat[i] = feature_mat[i] * unique_terms_in_cat
+            feature_mat_cat[i] = feature_mat_cat[i] * unique_terms_in_cat
 
         print ('Top 10 terms in each category')
         for i in range(len(categories)):
             print (categories[i])
-            best_feature_ind = numpy.argsort(-feature_mat[i])[:10]
+            best_feature_ind = numpy.argsort(-feature_mat_cat[i])[:10]
             print (terms[best_feature_ind])
-    def create_feature_matrix(self):
-        user_labels = pandas.read_csv(os.path.join(self.home_dir, 'userid_labels_screenname.csv'), dtype=str)
-        user_labels = user_labels.loc[user_labels.screen_name.notnull(), :]
-        user_labels['has_tweet'] = True
-        ipdb.set_trace()
-        for ind, row in user_labels.iterrows():
-            file_path = os.path.join(self.tweet_dir, '%s_%s.csv' % (row.screen_name, row.sns_id))
-            df_tweet = pandas.read_csv(file_path, dtype=str)
-            if df_tweet.shape[0] == 0:
-                user_labels.loc[ind, 'has_tweet'] = False
-            else:
-                user_tweets = ' '.join(df_tweet.text[df_tweet.text.notnull()].tolist())
-                user_tweets = self.preprocess_text(user_tweets)
-                self.corpus.append(user_tweets)
+         
+        #Create feature matrix for all users
+        labels = []
+        user_tweets = []
+        for key, val in self.category_corpus.items():
+            labels += [key] * len(val)
+            user_tweets += val
+        feature_mat_user = tfidf.transform(user_tweets)
+        pickle.dump(feature_mat_user, open('feature_mat_catbased.pickle', 'wb'))
+        pickle.dump(labels, open('labels.pickle', 'wb'))
+        feature_scores = numpy.max(feature_mat_cat, axis=0)
+        pickle.dump(feature_scores, open('feature_scores.pickle', 'wb'))
+        
+        #Method 1: User-based method 
+        tfidf = TfidfVectorizer(min_df=1, sublinear_tf=True, stop_words='english')
+        feature_mat_user = tfidf.fit_transform(user_tweets)
+        pickle.dump(feature_mat_user, open('feature_mat_userbased.pickle', 'wb'))
+        pickle.dump(tfidf, open('tfidf_userbased.pickle', 'wb'))
 
-        self.final_label = user_labels.loc[user_labels.has_tweet==True, 'Category'].tolist()
-        tfidf = TfidfVectorizer(min_df=1)
-        feature_mat = tfidf.fit_transform(self.corpus)
-        pickle.dump(tfidf, open(os.path.join(self.home_dir, 'tfidf.pickle'), 'wb'))
-        pickle.dump(feature_mat, open(os.path.join(self.home_dir, 'feature_mat.pickle'), 'wb'))
-        pickle.dump(self.final_label, open(os.path.join(self.home_dir, 'final_label.pickle'), 'wb'))
     def prediction_analysis(self, mode='test', user_id=None):
-        if mode == 'best_terms':
-            print ('Finding the best terms representing each category')
-            self.find_best_terms()
+        if mode == 'feature':
+            print ('Create feature matrix, find the best terms representing each category')
+            self.create_feature_matrix()
             return
         
-        tfidf = pickle.load(open(os.path.join(self.home_dir, 'tfidf.pickle'), 'rb'))
-        feature_mat = pickle.load(open(os.path.join(self.home_dir, 'feature_mat.pickle'), 'rb'))
-        labels = pickle.load(open(os.path.join(self.home_dir, 'final_label.pickle'), 'rb'))
+        tfidf = pickle.load(open(os.path.join(self.home_dir, 'tfidf_catbased.pickle'), 'rb'))
+        feature_mat = pickle.load(open(os.path.join(self.home_dir, 'feature_mat_userbased.pickle'), 'rb'))
+        labels = pickle.load(open(os.path.join(self.home_dir, 'labels.pickle'), 'rb'))
+        feature_scores = pickle.load(open(os.path.join(self.home_dir, 'feature_scores.pickle'), 'rb'))
+
         labels = [1 if i == 'Politician' else 2 if i == 'Trader' else 3 for i in labels]
         X_train, X_test, y_train, y_test = train_test_split(feature_mat, labels, test_size=0.3, random_state=0)
         if mode == 'model':
@@ -170,8 +170,8 @@ class UserAnalysis:
             models['SVM'] = SVC(kernel='linear', C=1)
             models['DecisionTree'] = tree.DecisionTreeClassifier()
             models['RandomForest'] = RandomForestClassifier(n_estimators=100)
-            #Using feature selection by idf
-            sorted_ind = numpy.argsort(-tfidf.idf_)
+            #sort feature descending
+            sorted_ind = numpy.argsort(-feature_scores)
             #Keep top k% of the features
             sel_feature_portion = [1, 0.9, 0.5, 0.3, 0.1]
             df_cv_results = pandas.DataFrame(index=[str(i) for i in sel_feature_portion], columns=models.keys())
@@ -182,7 +182,8 @@ class UserAnalysis:
                     predicted = cross_val_predict(algo, sel_features, y_train, cv=5)
                     accuracy = metrics.accuracy_score(predicted, y_train)
                     df_cv_results.loc[str(portion), method_name] = accuracy
-                    print ('Select top {:.0f}% portion of features based  on IDF scores, {:s}: {:.2f} accuracy'.format(portion*100, method_name, accuracy))
+                    print ('Select top {:.0f}% portion of features, {:s}: {:.2f} accuracy'.format(portion*100, method_name, accuracy))
+            
             df_cv_results.to_csv('cross_validation_training.csv')
             print ('Done. Model  selection results are:')
             print (df_cv_results.head)
@@ -234,9 +235,9 @@ if __name__ == '__main__':
     optparser = OptionParser()
     optparser.add_option('-p', dest='home_dir', default='.')
     optparser.add_option('-t', dest='tweet_dir', default='tweet_ascii', help='Folder to store downloaded user  tweets')
-    optparser.add_option('-m', dest='mode', help='running mode: model (model selection on the training set), test (evaluate model on the test set - default option), predict (predict class probability of a new user), best_terms (find best terms representing each category)', default='test')
+    optparser.add_option('-m', dest='mode', help='running mode: model (model selection on the training set), test (evaluate model on the test set - default option), predict (predict class probability of a new user), feature (create feature matrix)', default='test')
     optparser.add_option('-u', dest='user_id', help='id of the user for prediction (in case mode=predict)', default=None)
+
     (options, args) = optparser.parse_args()
     user = UserAnalysis(options.home_dir, options.tweet_dir)
-    #user.create_feature_matrix()
     user.prediction_analysis(options.mode, options.user_id)
