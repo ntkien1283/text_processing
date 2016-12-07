@@ -1,3 +1,5 @@
+import enchant
+from sklearn.metrics import f1_score
 import csv
 import numpy
 import  pickle
@@ -32,6 +34,7 @@ class UserAnalysis:
         self.tweet_dir = tweet_dir
         self.corpus = []
         self.labels = []
+       
     def get_tweet_api(self):
         #Improvement: These keys should not be  included in the code but rather stored in local machine only
         CONSUMER_KEY ='jjxmqFnVhaVT0HNK42eeM06Ha'
@@ -70,29 +73,68 @@ class UserAnalysis:
             try:
                 new_tweets = api.user_timeline(screen_name=screen_name,count=200,max_id=oldest)
             except Exception as e:
-                print ('Error %s, message: %s' % (screen_name, e.message))
+                print ('Error %s' % screen_name)
                 break
         
         fout.close()
 
     def preprocess_text(self, text):
         text = preprocessor.clean(text).lower()
+        #Remove non-english words
 #        stop_words = set(stopwords.words('english'))
 #        word_tokens = word_tokenize(text)
 #        filtered_sentence = [w for w in word_tokens if not (w in stop_words or w in string.punctuation)]
         regex = re.compile('[%s]' % re.escape(string.punctuation))
         text = regex.sub('', text)
+        en_dict = enchant.Dict('en-US')
+        text = ' '.join([w if en_dict.check(w) and not w.isdigit() else '' for w in text.split(' ')  if w != ''])
         return text
-    def create_feature_matrix(self):
+    
+    #Find the  most representative terms for each class
+    def find_best_terms(self):
+        api = self.get_tweet_api()
+        user_labels = pandas.read_csv(os.path.join(self.home_dir, 'userid_labels_screenname.csv'), dtype=str)
+        user_labels = user_labels.loc[user_labels.screen_name.notnull(), :]
+        self.category_corpus = dict()
+        def get_corpus(df_users):
+            all_users_tweets = ''
+            for ind, row in df_users.iterrows():
+                try:
+                    file_path = os.path.join(self.tweet_dir, '%s_%s.csv' % (row.screen_name, row.sns_id))
+                    if not os.path.isfile(file_path):
+                        self.get_all_tweets(row.screen_name, file_path, api)
+                    
+                    df_tweet = pandas.read_csv(file_path, dtype=str)
+                    if df_tweet.shape[0] > 0:
+                        user_tweets = ' '.join(df_tweet.text[df_tweet.text.notnull()].tolist())
+                        user_tweets = self.preprocess_text(user_tweets)
+                        all_users_tweets += ' ' + user_tweets
+                except Exception as e:
+                    print ('Error %s, message: %s' % (row.screen_name, e.message))
+
+            self.category_corpus[df_users.Category.iloc[0]] = all_users_tweets
+        
+        user_labels.groupby('Category').apply(get_corpus)
+        categories = list(self.category_corpus.keys())
         tfidf = TfidfVectorizer(min_df=1)
-        feature_mat = tfidf.fit_transform(self.corpus)
-        pickle.dump(tfidf, open(os.path.join(self.home_dir, 'tfidf.pickle'), 'wb'))
-        pickle.dump(feature_mat, open(os.path.join(self.home_dir, 'feature_mat.pickle'), 'wb'))
-        pickle.dump(self.final_label, open(os.path.join(self.home_dir, 'final_label.pickle'), 'wb'))
-    def analyze(self):
+        feature_mat = tfidf.fit_transform(list(self.category_corpus.values())).toarray()
+        terms = numpy.array(tfidf.get_feature_names())
+        #Find the terms that appear in only 1 single Category
+        unique_terms_in_cat = numpy.sum(feature_mat, axis=0) == numpy.max(feature_mat, axis=0)
+        #Only keep the scores of the unique features
+        for i in range(len(categories)):
+            feature_mat[i] = feature_mat[i] * unique_terms_in_cat
+
+        print ('Top 10 terms in each category')
+        for i in range(len(categories)):
+            print (categories[i])
+            best_feature_ind = numpy.argsort(-feature_mat[i])[:10]
+            print (terms[best_feature_ind])
+    def create_feature_matrix(self):
         user_labels = pandas.read_csv(os.path.join(self.home_dir, 'userid_labels_screenname.csv'), dtype=str)
         user_labels = user_labels.loc[user_labels.screen_name.notnull(), :]
         user_labels['has_tweet'] = True
+        ipdb.set_trace()
         for ind, row in user_labels.iterrows():
             file_path = os.path.join(self.tweet_dir, '%s_%s.csv' % (row.screen_name, row.sns_id))
             df_tweet = pandas.read_csv(file_path, dtype=str)
@@ -104,8 +146,17 @@ class UserAnalysis:
                 self.corpus.append(user_tweets)
 
         self.final_label = user_labels.loc[user_labels.has_tweet==True, 'Category'].tolist()
-        self.create_feature_matrix()
+        tfidf = TfidfVectorizer(min_df=1)
+        feature_mat = tfidf.fit_transform(self.corpus)
+        pickle.dump(tfidf, open(os.path.join(self.home_dir, 'tfidf.pickle'), 'wb'))
+        pickle.dump(feature_mat, open(os.path.join(self.home_dir, 'feature_mat.pickle'), 'wb'))
+        pickle.dump(self.final_label, open(os.path.join(self.home_dir, 'final_label.pickle'), 'wb'))
     def prediction_analysis(self, mode='test', user_id=None):
+        if mode == 'best_terms':
+            print ('Finding the best terms representing each category')
+            self.find_best_terms()
+            return
+        
         tfidf = pickle.load(open(os.path.join(self.home_dir, 'tfidf.pickle'), 'rb'))
         feature_mat = pickle.load(open(os.path.join(self.home_dir, 'feature_mat.pickle'), 'rb'))
         labels = pickle.load(open(os.path.join(self.home_dir, 'final_label.pickle'), 'rb'))
@@ -140,10 +191,10 @@ class UserAnalysis:
             SVM_model = SVC(kernel='linear', C=1)
             SVM_model.fit(X_train, y_train) 
             predicted = SVM_model.predict(X_test)
-            result = metrics.accuracy_score(predicted, y_test)
-            print ('Accuracy on the test set, including %d users is: %.2f' % (len(y_test), result))
+            accuracy = metrics.accuracy_score(predicted, y_test)
+            f1 = f1_score(predicted, y_test, average='macro') #average of all classes
+            print ('Accuracy, f1_score on the test set, including %d users is: %.2f, %.2f' % (len(y_test), accuracy, f1))
         else:
-            ipdb.set_trace()
             print ('Predict  class probability of a user with id provided')
             if user_id is None:
                 print ('User id not provided')
@@ -183,9 +234,9 @@ if __name__ == '__main__':
     optparser = OptionParser()
     optparser.add_option('-p', dest='home_dir', default='.')
     optparser.add_option('-t', dest='tweet_dir', default='tweet_ascii', help='Folder to store downloaded user  tweets')
-    optparser.add_option('-m', dest='mode', help='running mode: model (model selection on the training set), test (evaluate model on the test set - default option), predict (predict class probability of a new user)', default='test')
+    optparser.add_option('-m', dest='mode', help='running mode: model (model selection on the training set), test (evaluate model on the test set - default option), predict (predict class probability of a new user), best_terms (find best terms representing each category)', default='test')
     optparser.add_option('-u', dest='user_id', help='id of the user for prediction (in case mode=predict)', default=None)
-
     (options, args) = optparser.parse_args()
     user = UserAnalysis(options.home_dir, options.tweet_dir)
+    #user.create_feature_matrix()
     user.prediction_analysis(options.mode, options.user_id)
