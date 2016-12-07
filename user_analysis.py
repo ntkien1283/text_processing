@@ -1,5 +1,4 @@
 import enchant
-from sklearn.metrics import f1_score
 import csv
 import numpy
 import  pickle
@@ -48,7 +47,7 @@ class UserAnalysis:
         api = tweepy.API(auth)
         return api
 
-    def get_all_tweets(self, screen_name, file_path, api):
+    def get_user_tweets(self, screen_name, file_path, api):
         #initialize a list to hold all the tweepy Tweets
         fout = open(file_path, 'wt')
         writer = csv.writer(fout)
@@ -58,7 +57,8 @@ class UserAnalysis:
         try:
             new_tweets = api.user_timeline(screen_name = screen_name,count=200)
         except Exception as e:
-            print ('Error %s, message: %s' % (screen_name, e.message))
+            print ('Error with user ' + screen_name)
+            print (e)
             fout.close()
             return 
 
@@ -73,11 +73,31 @@ class UserAnalysis:
             try:
                 new_tweets = api.user_timeline(screen_name=screen_name,count=200,max_id=oldest)
             except Exception as e:
-                print ('Error %s' % screen_name)
+                print ('Error ' + screen_name)
+                print (e)
                 break
-        
+                
         fout.close()
-
+    def download_tweets_dataset(self):
+        if not os.path.isdir(self.tweet_dir):
+            os.system('mkdir ' + self.tweet_dir)
+        api = self.get_tweet_api()
+        df_user_id = pandas.read_csv('userid_labels_screenname.csv',dtype=str)
+        missing_user = []
+        for user_id in df_user_id.sns_id:
+            try:
+                user_profile = api.lookup_users(user_ids=[user_id])
+                file_path = os.path.join(self.tweet_dir, '%s_%s.csv' % (user_profile[0].screen_name, user_id))
+                if not os.path.isfile(file_path):
+                    self.get_user_tweets(user_profile[0].screen_name, file_path, api)
+            except Exception as e:
+                print ('Error with user ' + user_id)
+                print (e)
+                missing_user.append(user_id)
+        
+        print ('User  with missing data are:')
+        print (missing_user)
+        print ('Done downloading all tweets')    
     def preprocess_text(self, text):
         text = preprocessor.clean(text).lower()
         regex = re.compile('[%s]' % re.escape(string.punctuation))
@@ -88,6 +108,8 @@ class UserAnalysis:
     
     def create_feature_matrix(self):
         #Load tweets and create the feature matrix for all users
+        if not os.path.isdir(self.tweet_dir):
+            os.system('mkdir ' + self.tweet_dir)
         api = self.get_tweet_api()
         user_labels = pandas.read_csv(os.path.join(self.home_dir, 'userid_labels_screenname.csv'), dtype=str)
         user_labels = user_labels.loc[user_labels.screen_name.notnull(), :]
@@ -98,7 +120,7 @@ class UserAnalysis:
                 try:
                     file_path = os.path.join(self.tweet_dir, '%s_%s.csv' % (row.screen_name, row.sns_id))
                     if not os.path.isfile(file_path):
-                        self.get_all_tweets(row.screen_name, file_path, api)
+                        self.get_user_tweets(row.screen_name, file_path, api)
                     
                     df_tweet = pandas.read_csv(file_path, dtype=str)
                     if df_tweet.shape[0] > 0:
@@ -106,8 +128,8 @@ class UserAnalysis:
                         user_tweets = self.preprocess_text(user_tweets)
                         all_users_tweets.append(user_tweets)
                 except Exception as e:
-                    print ('Error %s, message: %s' % (row.screen_name, e.message))
-
+                    print ('Error ' + row.screen_name)
+                    print (e)
             self.category_corpus[df_users.Category.iloc[0]] = all_users_tweets
         
         #Method 2: Category-based method 
@@ -148,17 +170,30 @@ class UserAnalysis:
         feature_mat_user = tfidf.fit_transform(user_tweets)
         pickle.dump(feature_mat_user, open('feature_mat_userbased.pickle', 'wb'))
         pickle.dump(tfidf, open('tfidf_userbased.pickle', 'wb'))
+        print ('Done creating feature matrices, which are saved in pickle files')
 
-    def prediction_analysis(self, mode='test', user_id=None):
+    def run(self, mode='test', user_id=None):
         if mode == 'feature':
             print ('Create feature matrix, find the best terms representing each category')
             self.create_feature_matrix()
             return
+        if mode == 'download':
+            print ('Download tweets of users stored in file userid_labels_screenname.csv')
+            self.download_tweets_dataset()
+            return 
+
+        tfidf_filename = 'tfidf_catbased.pickle'
+        feature_mat_filename = 'feature_mat_catbased.pickle'
+        label_filename = 'labels.pickle'
+        feature_score_filename = 'feature_scores.pickle'
+        if not (os.path.isfile(tfidf_filename) and os.path.isfile(feature_mat_filename) and os.path.isfile(label_filename) and os.path.isfile(feature_score_filename)):
+            print ('Features have not been generated yet, please run with mode "feature" first')
+            return
         
-        tfidf = pickle.load(open(os.path.join(self.home_dir, 'tfidf_catbased.pickle'), 'rb'))
-        feature_mat = pickle.load(open(os.path.join(self.home_dir, 'feature_mat_userbased.pickle'), 'rb'))
-        labels = pickle.load(open(os.path.join(self.home_dir, 'labels.pickle'), 'rb'))
-        feature_scores = pickle.load(open(os.path.join(self.home_dir, 'feature_scores.pickle'), 'rb'))
+        tfidf = pickle.load(open(os.path.join(self.home_dir, tfidf_filename), 'rb'))
+        feature_mat = pickle.load(open(os.path.join(self.home_dir, feature_mat_filename), 'rb'))
+        labels = pickle.load(open(os.path.join(self.home_dir, label_filename), 'rb'))
+        feature_scores = pickle.load(open(os.path.join(self.home_dir, feature_score_filename), 'rb'))
 
         labels = [1 if i == 'Politician' else 2 if i == 'Trader' else 3 for i in labels]
         X_train, X_test, y_train, y_test = train_test_split(feature_mat, labels, test_size=0.3, random_state=0)
@@ -193,7 +228,7 @@ class UserAnalysis:
             SVM_model.fit(X_train, y_train) 
             predicted = SVM_model.predict(X_test)
             accuracy = metrics.accuracy_score(predicted, y_test)
-            f1 = f1_score(predicted, y_test, average='macro') #average of all classes
+            f1 = metrics.f1_score(predicted, y_test, average='macro') #average of all classes
             print ('Accuracy, f1_score on the test set, including %d users is: %.2f, %.2f' % (len(y_test), accuracy, f1))
         else:
             print ('Predict  class probability of a user with id provided')
@@ -212,12 +247,13 @@ class UserAnalysis:
             try:
                 user_profile = api.lookup_users(user_ids=[user_id])
             except Exception as e:
-                print ('Cannot download user information, message: ' + e.message)
+                print ('Cannot download user information')
+                print (e)
                 print ('Predict based on prior probability: 0.22 Politician, 0.31 Trader, and 0.47 Journalist')
                 return
             
             file_path = os.path.join(self.tweet_dir, '%s_%s.csv' % (user_profile[0].screen_name, user_id))
-            self.get_all_tweets(user_profile[0].screen_name, file_path, api)
+            self.get_user_tweets(user_profile[0].screen_name, file_path, api)
             df_tweet = pandas.read_csv(file_path, dtype=str)
             if df_tweet.shape[0] == 0:
                 print ('Cannot download tweets from this user')
@@ -231,13 +267,13 @@ class UserAnalysis:
             predicted = model.predict_proba(user_feature)
             print ('Prediction result of this user is: %.2f Politician, %.2f Trader, and %.2f Journalist' % (predicted[0][0], predicted[0][1], predicted[0][2]))
             return
+
 if __name__ == '__main__':
     optparser = OptionParser()
     optparser.add_option('-p', dest='home_dir', default='.')
     optparser.add_option('-t', dest='tweet_dir', default='tweet_ascii', help='Folder to store downloaded user  tweets')
-    optparser.add_option('-m', dest='mode', help='running mode: model (model selection on the training set), test (evaluate model on the test set - default option), predict (predict class probability of a new user), feature (create feature matrix)', default='test')
+    optparser.add_option('-m', dest='mode', help='running mode: download (download tweets of users in the dataset), feature (create feature matrix), model (model selection on the training set), test (evaluate model on the test set - default option), predict (predict class probability of a new user)', default='test')
     optparser.add_option('-u', dest='user_id', help='id of the user for prediction (in case mode=predict)', default=None)
-
     (options, args) = optparser.parse_args()
     user = UserAnalysis(options.home_dir, options.tweet_dir)
-    user.prediction_analysis(options.mode, options.user_id)
+    user.run(options.mode, options.user_id)
