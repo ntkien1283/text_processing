@@ -111,38 +111,29 @@ class UserAnalysis:
         if not os.path.isdir(self.tweet_dir):
             os.system('mkdir ' + self.tweet_dir)
         api = self.get_tweet_api()
-        user_labels = pandas.read_csv(os.path.join(self.home_dir, 'userid_labels_screenname.csv'), dtype=str)
-        user_labels = user_labels.loc[user_labels.screen_name.notnull(), :]
-        self.category_corpus = dict()
-        def get_corpus(df_users):
-            all_users_tweets = []
-            for ind, row in df_users.iterrows():
-                try:
-                    file_path = os.path.join(self.tweet_dir, '%s_%s.csv' % (row.screen_name, row.sns_id))
-                    if not os.path.isfile(file_path):
-                        self.get_user_tweets(row.screen_name, file_path, api)
-                    
-                    df_tweet = pandas.read_csv(file_path, dtype=str)
-                    if df_tweet.shape[0] > 0:
-                        user_tweets = ' '.join(df_tweet.text[df_tweet.text.notnull()].tolist())
-                        user_tweets = self.preprocess_text(user_tweets)
-                        all_users_tweets.append(user_tweets)
-                except Exception as e:
-                    print ('Error processing with user ' + row.screen_name)
-                    print (e)
-            self.category_corpus[df_users.Category.iloc[0]] = all_users_tweets
-        
-        user_labels.groupby('Category').apply(get_corpus)
-        categories = list(self.category_corpus.keys())
-      
+        df_users = pandas.read_csv(os.path.join(self.home_dir, 'userid_labels_screenname.csv'), dtype=str)
+        df_users = df_users.loc[df_users.screen_name.notnull(), :]
+        #Load user tweets and labels
+        user_tweets = []  
+        labels = []
+        for ind, row in df_users.iterrows():
+            try:
+                file_path = os.path.join(self.tweet_dir, '%s_%s.csv' % (row.screen_name, row.sns_id))
+                if not os.path.isfile(file_path):
+                    self.get_user_tweets(row.screen_name, file_path, api)
+                
+                df_tweet = pandas.read_csv(file_path, dtype=str)
+                if df_tweet.shape[0] > 0:
+                    tweets = ' '.join(df_tweet.text[df_tweet.text.notnull()].tolist())
+                    tweets = self.preprocess_text(tweets)
+                    user_tweets.append(tweets)
+                    labels.append(row.Category)
+            except Exception as e:
+                print ('Error processing with user ' + row.screen_name)
+                print (e)
+        categories = numpy.unique(labels)
         ##########################################################################
         ##1. Split into training and test set
-        labels = []
-        user_tweets = []
-        for key, val in self.category_corpus.items():
-            labels += [key] * len(val)
-            user_tweets += val
-        
         tweet_train, tweet_test, y_train, y_test = train_test_split(numpy.array(user_tweets), numpy.array(labels), test_size=0.3, random_state=0)
         #######################################################################        
         #Method 1: User-based method 
