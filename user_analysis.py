@@ -1,3 +1,4 @@
+import matplotlib.pyplot as plt
 import enchant
 import csv
 import numpy
@@ -24,8 +25,7 @@ import ipdb
 import time # standard lib
 import tweepy
 from tweepy import OAuthHandler
-
-#http://stevenloria.com/how-to-build-a-text-classification-system-with-python-and-textblob/
+ #http://stevenloria.com/how-to-build-a-text-classification-system-with-python-and-textblob/
 #http://scikit-learn.org/stable/modules/feature_extraction.html#text-feature-extraction
 class UserAnalysis:
     def __init__(self, home_dir, tweet_dir):
@@ -128,20 +128,56 @@ class UserAnalysis:
                         user_tweets = self.preprocess_text(user_tweets)
                         all_users_tweets.append(user_tweets)
                 except Exception as e:
-                    print ('Error ' + row.screen_name)
+                    print ('Error processing with user ' + row.screen_name)
                     print (e)
             self.category_corpus[df_users.Category.iloc[0]] = all_users_tweets
         
-        #Method 2: Category-based method 
         user_labels.groupby('Category').apply(get_corpus)
         categories = list(self.category_corpus.keys())
+      
+        ##########################################################################
+        ##1. Split into training and test set
+        labels = []
+        user_tweets = []
+        for key, val in self.category_corpus.items():
+            labels += [key] * len(val)
+            user_tweets += val
+        
+        tweet_train, tweet_test, y_train, y_test = train_test_split(numpy.array(user_tweets), numpy.array(labels), test_size=0.3, random_state=0)
+        #######################################################################        
+        #Method 1: User-based method 
+        #Create the feature matrix for  all users using tfidf obtained from users
         tfidf = TfidfVectorizer(min_df=1, sublinear_tf=True, stop_words='english')
-        categories_tweets = [' '.join(t) for t in self.category_corpus.values()]
-        feature_mat_cat = tfidf.fit_transform(categories_tweets).toarray()
-        pickle.dump(tfidf, open('tfidf_catbased.pickle', 'wb'))
+        #Learn dictionary from the training tweets
+        X_train = tfidf.fit_transform(tweet_train)
+        #Apply this dictionary to transform the test tweets
+        X_test = tfidf.transform(tweet_test)
+        
+        pickle.dump(X_train, open('X_train_userbased.pickle', 'wb'))
+        pickle.dump(X_test, open('X_test_userbased.pickle', 'wb'))
+        pickle.dump(tfidf, open('tfidf_userbased.pickle', 'wb'))
+        pickle.dump(y_train, open('y_train.pickle', 'wb'))
+        pickle.dump(y_test, open('y_test.pickle', 'wb'))
 
-        terms = numpy.array(tfidf.get_feature_names())
+        #Method 2: Category-based method 
+        ###########################################################################
+        tfidf = TfidfVectorizer(min_df=1, sublinear_tf=True, stop_words='english')
+        tweet_cat = [' '.join(tweet_train[y_train == cat]) for cat in categories]
+        
+        #Learn tfidf from category-wise perspective, results are the tfidf of the term wrt to each category
+        feature_mat_cat = tfidf.fit_transform(tweet_cat).toarray()
+        feature_scores = numpy.max(feature_mat_cat, axis=0)
+        #Apply the dictionary on the user tweets
+        X_train = tfidf.transform(tweet_train)
+        X_test = tfidf.transform(tweet_test)
+        pickle.dump(X_train, open('X_train_catbased.pickle', 'wb'))
+        pickle.dump(X_test, open('X_test_catbased.pickle', 'wb'))
+        pickle.dump(tfidf, open('tfidf_catbased.pickle', 'wb'))
+        pickle.dump(feature_scores, open('feature_scores.pickle', 'wb'))
+  
+        #************************************************************************************ 
         #Find the terms that appear in only 1 single Category
+        terms = numpy.array(tfidf.get_feature_names())
         unique_terms_in_cat = numpy.sum(feature_mat_cat, axis=0) == numpy.max(feature_mat_cat, axis=0)
         #Only keep the scores of the unique features
         for i in range(len(categories)):
@@ -153,26 +189,24 @@ class UserAnalysis:
             best_feature_ind = numpy.argsort(-feature_mat_cat[i])[:10]
             print (terms[best_feature_ind])
          
-        #Create feature matrix for all users
-        labels = []
-        user_tweets = []
-        for key, val in self.category_corpus.items():
-            labels += [key] * len(val)
-            user_tweets += val
-        feature_mat_user = tfidf.transform(user_tweets)
-        pickle.dump(feature_mat_user, open('feature_mat_catbased.pickle', 'wb'))
-        pickle.dump(labels, open('labels.pickle', 'wb'))
-        feature_scores = numpy.max(feature_mat_cat, axis=0)
-        pickle.dump(feature_scores, open('feature_scores.pickle', 'wb'))
-        
-        #Method 1: User-based method 
-        tfidf = TfidfVectorizer(min_df=1, sublinear_tf=True, stop_words='english')
-        feature_mat_user = tfidf.fit_transform(user_tweets)
-        pickle.dump(feature_mat_user, open('feature_mat_userbased.pickle', 'wb'))
-        pickle.dump(tfidf, open('tfidf_userbased.pickle', 'wb'))
-        print ('Done creating feature matrices, which are saved in pickle files')
+    def test_SVM_param(self, X_train, y_train):
+        print ('Evaluate different C values of SVM')
+        C_params = [0.01, 0.1, 1, 10, 100] 
+        accuracies = []
+        f1_scores = []
+        for C in C_params:
+            SVM_model = SVC(kernel='linear', C=C)
+            predicted = cross_val_predict(SVM_model, X_train, y_train, cv=3)
+            accuracies.append(metrics.accuracy_score(predicted, y_train))
+            f1_scores.append(metrics.f1_score(predicted, y_train, average='macro')) #average of all classes
 
-    def run(self, mode='test', user_id=None):
+        plt.plot(range(len(C_params)), accuracies, 'r', range(len(C_params)), f1_scores, 'b', linewidth=2.0)
+        plt.xticks(range(len(C_params)), [str(i) for i in (C_params)])
+        plt.legend(['Accuracy', 'F1 measure'], loc='upper_left')
+        plt.xlabel('Parameter C')
+        plt.ylabel('Result')
+        plt.show()
+    def run(self, mode='test', user_id=None, idf_catbased=True):
         if mode == 'feature':
             print ('Create feature matrix, find the best terms representing each category')
             self.create_feature_matrix()
@@ -181,23 +215,34 @@ class UserAnalysis:
             print ('Download tweets of users stored in file userid_labels_screenname.csv')
             self.download_tweets_dataset()
             return 
+        cv_result_file = 'cross_validation_' 
+        try: 
+            #Load files 
+            y_train = pickle.load(open('y_train.pickle', 'rb'))
+            y_test = pickle.load(open('y_test.pickle', 'rb'))
+            y_train = [1 if i == 'Politician' else 2 if i == 'Trader' else 3 for i in y_train]
+            y_test = [1 if i == 'Politician' else 2 if i == 'Trader' else 3 for i in y_test]
 
-        tfidf_filename = 'tfidf_catbased.pickle'
-        feature_mat_filename = 'feature_mat_catbased.pickle'
-        label_filename = 'labels.pickle'
-        feature_score_filename = 'feature_scores.pickle'
-        if not (os.path.isfile(tfidf_filename) and os.path.isfile(feature_mat_filename) and os.path.isfile(label_filename) and os.path.isfile(feature_score_filename)):
-            print ('Features have not been generated yet, please run with mode "feature" first')
+            feature_scores = pickle.load(open('feature_scores.pickle', 'rb'))
+            if idf_catbased:
+                X_train = pickle.load(open('X_train_catbased.pickle', 'rb'))
+                X_test = pickle.load(open('X_test_catbased.pickle', 'rb'))
+                tfidf = pickle.load(open('tfidf_catbased.pickle', 'rb'))
+                cv_result_file += '_catbased.csv'
+            else:
+                X_train = pickle.load(open('X_train_userbased.pickle', 'rb'))
+                X_test = pickle.load(open('X_test_userbased.pickle', 'rb'))
+                tfidf = pickle.load(open('tfidf_userbased.pickle', 'rb'))
+                cv_result_file += '_userbased.csv'
+
+        except Exception as e:
+            print ('Cannot load feature files. Please run feature extraction first')
             return
-        
-        tfidf = pickle.load(open(os.path.join(self.home_dir, tfidf_filename), 'rb'))
-        feature_mat = pickle.load(open(os.path.join(self.home_dir, feature_mat_filename), 'rb'))
-        labels = pickle.load(open(os.path.join(self.home_dir, label_filename), 'rb'))
-        feature_scores = pickle.load(open(os.path.join(self.home_dir, feature_score_filename), 'rb'))
-
-        labels = [1 if i == 'Politician' else 2 if i == 'Trader' else 3 for i in labels]
-        X_train, X_test, y_train, y_test = train_test_split(feature_mat, labels, test_size=0.3, random_state=0)
+        #sort feature descending
+        sorted_ind = numpy.argsort(-feature_scores)
+        sel_feature_portion = [1, 0.9, 0.5, 0.3, 0.1]
         if mode == 'model':
+ 
             print ('Model selection on the training set (70% of data)')
             #Model selection on the training set
             models = dict()
@@ -205,10 +250,8 @@ class UserAnalysis:
             models['SVM'] = SVC(kernel='linear', C=1)
             models['DecisionTree'] = tree.DecisionTreeClassifier()
             models['RandomForest'] = RandomForestClassifier(n_estimators=100)
-            #sort feature descending
-            sorted_ind = numpy.argsort(-feature_scores)
             #Keep top k% of the features
-            sel_feature_portion = [1, 0.9, 0.5, 0.3, 0.1]
+ 
             df_cv_results = pandas.DataFrame(index=[str(i) for i in sel_feature_portion], columns=models.keys())
             for portion in sel_feature_portion:
                 remove_feature_ind = sorted_ind[int(portion*len(sorted_ind)):]
@@ -219,54 +262,70 @@ class UserAnalysis:
                     df_cv_results.loc[str(portion), method_name] = accuracy
                     print ('Select top {:.0f}% portion of features, {:s}: {:.2f} accuracy'.format(portion*100, method_name, accuracy))
             
-            df_cv_results.to_csv('cross_validation_training.csv')
+            df_cv_results.to_csv(cv_result_file)
             print ('Done. Model  selection results are:')
             print (df_cv_results.head)
-        elif mode == 'test':
-            print ('Test on 30% of data')
-            SVM_model = SVC(kernel='linear', C=1)
-            SVM_model.fit(X_train, y_train) 
-            predicted = SVM_model.predict(X_test)
-            accuracy = metrics.accuracy_score(predicted, y_test)
-            f1 = metrics.f1_score(predicted, y_test, average='macro') #average of all classes
-            print ('Accuracy, f1_score on the test set, including %d users is: %.2f, %.2f' % (len(y_test), accuracy, f1))
-        else:
-            print ('Predict  class probability of a user with id provided')
-            if user_id is None:
-                print ('User id not provided')
-                return
-            print ('Predict for user with id %s' % user_id)
-            model_path = os.path.join(self.home_dir, 'model.pickle')
-            if os.path.isfile(model_path):
-                model = pickle.load(open(model_path, 'rb'))
-            else:
-                model = SVC(kernel='linear', C=1, probability=True)
-                model.fit(feature_mat, labels)
-                pickle.dump(model, open(model_path, 'wb'))
-            api = self.get_tweet_api()
-            try:
-                user_profile = api.lookup_users(user_ids=[user_id])
-            except Exception as e:
-                print ('Cannot download user information')
-                print (e)
-                print ('Predict based on prior probability: 0.22 Politician, 0.31 Trader, and 0.47 Journalist')
-                return
-            
-            file_path = os.path.join(self.tweet_dir, '%s_%s.csv' % (user_profile[0].screen_name, user_id))
-            self.get_user_tweets(user_profile[0].screen_name, file_path, api)
-            df_tweet = pandas.read_csv(file_path, dtype=str)
-            if df_tweet.shape[0] == 0:
-                print ('Cannot download tweets from this user')
-                print ('Predict based on prior probability: 0.22 Politician, 0.31 Trader, and 0.47 Journalist')
-                return
-            else:
-                user_tweets = ' '.join(df_tweet.text[df_tweet.text.notnull()].tolist())
-                user_tweets = self.preprocess_text(user_tweets)
-            
-            user_feature = tfidf.transform([user_tweets])
-            predicted = model.predict_proba(user_feature)
-            print ('Prediction result of this user is: %.2f Politician, %.2f Trader, and %.2f Journalist' % (predicted[0][0], predicted[0][1], predicted[0][2]))
+            self.test_SVM_param(X_train, y_train)
             return
+        if  mode == 'test' or mode == 'predict':
+            portion = 0.9
+            remove_feature_ind = sorted_ind[int(portion*len(sorted_ind)):]
+            model = SVC(kernel='linear', C=1, probability=True)
+
+            if mode == 'test':
+                print ('Test on 30% of data')
+                sel_features_train = numpy.delete(X_train.toarray(), remove_feature_ind, axis=1)
+                model.fit(sel_features_train, y_train) 
+                sel_features_test = numpy.delete(X_test.toarray(), remove_feature_ind, axis=1)
+                
+                predicted = model.predict(sel_features_test)
+                accuracy = metrics.accuracy_score(predicted, y_test)
+                f1_score  = metrics.f1_score(predicted, y_test, average='macro') #average of all classes
+                print ('Use %.2f portion of features. Accuracy, f1_score on the test set, including %d users is: %.2f, %.2f' % (portion, len(y_test), accuracy, f1_score))
+
+            else:
+                print ('Predict  class probability of a user with id provided')
+                if user_id is None:
+                    print ('User id not provided')
+                    return
+                print ('Predict for user with id %s' % user_id)
+                
+                model_path = os.path.join(self.home_dir, 'model.pickle')
+                if os.path.isfile(model_path):
+                    model = pickle.load(open(model_path, 'rb'))
+                else:
+                    #Train the final model using  all users data
+                    X_train = numpy.concatenate((X_train.toarray(), X_test.toarray()), axis=0)
+                    y_train += y_test
+                    sel_features_train = numpy.delete(X_train, remove_feature_ind, axis=1)
+                    model.fit(sel_features_train, y_train) 
+                    pickle.dump(model, open(model_path, 'wb'))
+
+                api = self.get_tweet_api()
+                try:
+                    user_profile = api.lookup_users(user_ids=[user_id])
+                except Exception as e:
+                    print ('Cannot download user information')
+                    print (e)
+                    print ('Predict based on prior probability: 0.22 Politician, 0.31 Trader, and 0.47 Journalist')
+                    return
+            
+                file_path = os.path.join(self.tweet_dir, '%s_%s.csv' % (user_profile[0].screen_name, user_id))
+                self.get_user_tweets(user_profile[0].screen_name, file_path, api)
+                df_tweet = pandas.read_csv(file_path, dtype=str)
+                if df_tweet.shape[0] == 0:
+                    print ('Cannot download tweets from this user')
+                    print ('Predict based on prior probability: 0.22 Politician, 0.31 Trader, and 0.47 Journalist')
+                    return
+                else:
+                    user_tweets = ' '.join(df_tweet.text[df_tweet.text.notnull()].tolist())
+                    user_tweets = self.preprocess_text(user_tweets)
+                
+                user_feature = tfidf.transform([user_tweets])
+                user_feature = numpy.delete(user_feature.toarray(), remove_feature_ind, axis=1)
+                predicted = model.predict_proba(user_feature)
+                print ('Prediction result of this user is: %.2f Politician, %.2f Trader, and %.2f Journalist' % (predicted[0][0], predicted[0][1], predicted[0][2]))
+                return
 
 if __name__ == '__main__':
     optparser = OptionParser()
@@ -276,4 +335,5 @@ if __name__ == '__main__':
     optparser.add_option('-u', dest='user_id', help='id of the user for prediction (in case mode=predict)', default=None)
     (options, args) = optparser.parse_args()
     user = UserAnalysis(options.home_dir, options.tweet_dir)
-    user.run(options.mode, options.user_id)
+    idf_catbased = True
+    user.run(options.mode, options.user_id, idf_catbased)
