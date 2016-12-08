@@ -86,12 +86,13 @@ class UserAnalysis:
         missing_user = []
         for user_id in df_user_id.sns_id:
             try:
+                print ('Downloading data for user ' + user_id)
                 user_profile = api.lookup_users(user_ids=[user_id])
                 file_path = os.path.join(self.tweet_dir, '%s_%s.csv' % (user_profile[0].screen_name, user_id))
                 if not os.path.isfile(file_path):
                     self.get_user_tweets(user_profile[0].screen_name, file_path, api)
             except Exception as e:
-                print ('Error with user ' + user_id)
+                print ('Error with user ' + user_id + '. Continue processing')
                 print (e)
                 missing_user.append(user_id)
         
@@ -118,6 +119,7 @@ class UserAnalysis:
         labels = []
         for ind, row in df_users.iterrows():
             try:
+                print ('Loading data of user ' + row.screen_name)
                 file_path = os.path.join(self.tweet_dir, '%s_%s.csv' % (row.screen_name, row.sns_id))
                 if not os.path.isfile(file_path):
                     self.get_user_tweets(row.screen_name, file_path, api)
@@ -129,12 +131,12 @@ class UserAnalysis:
                     user_tweets.append(tweets)
                     labels.append(row.Category)
             except Exception as e:
-                print ('Error processing with user ' + row.screen_name)
-                print (e)
+                continue
         categories = numpy.unique(labels)
         ##########################################################################
         ##1. Split into training and test set
         tweet_train, tweet_test, y_train, y_test = train_test_split(numpy.array(user_tweets), numpy.array(labels), test_size=0.3, random_state=0)
+        print ('There are %d  users  in the training set, %d  users in the test set' % (len(y_train), len(y_test)))
         #######################################################################        
         #Method 1: User-based method 
         #Create the feature matrix for  all users using tfidf obtained from users
@@ -187,17 +189,19 @@ class UserAnalysis:
         f1_scores = []
         for C in C_params:
             SVM_model = SVC(kernel='linear', C=C)
-            predicted = cross_val_predict(SVM_model, X_train, y_train, cv=3)
-            accuracies.append(metrics.accuracy_score(predicted, y_train))
-            f1_scores.append(metrics.f1_score(predicted, y_train, average='macro')) #average of all classes
-
+            predicted = cross_val_predict(SVM_model, X_train, y_train, cv=5)
+            acc = metrics.accuracy_score(predicted, y_train)
+            accuracies.append(acc)
+            f1 = metrics.f1_score(predicted, y_train, average='macro') #average of all classes
+            f1_scores.append(f1)
+            print ('C = %.2f, accuracy: %.2f, f1_score: %.2f' % (C, acc, f1))
         plt.plot(range(len(C_params)), accuracies, 'r', range(len(C_params)), f1_scores, 'b', linewidth=2.0)
         plt.xticks(range(len(C_params)), [str(i) for i in (C_params)])
         plt.legend(['Accuracy', 'F1 measure'], loc='upper_left')
         plt.xlabel('Parameter C')
         plt.ylabel('Result')
         plt.show()
-    def run(self, mode='test', user_id=None, idf_catbased=True):
+    def run(self, mode='test', user_id=None, idf_method='cat'):
         if mode == 'feature':
             print ('Create feature matrix, find the best terms representing each category')
             self.create_feature_matrix()
@@ -206,7 +210,7 @@ class UserAnalysis:
             print ('Download tweets of users stored in file userid_labels_screenname.csv')
             self.download_tweets_dataset()
             return 
-        cv_result_file = 'cross_validation_' 
+        cv_result_file = 'cross_validation' 
         try: 
             #Load files 
             y_train = pickle.load(open('y_train.pickle', 'rb'))
@@ -215,16 +219,18 @@ class UserAnalysis:
             y_test = [1 if i == 'Politician' else 2 if i == 'Trader' else 3 for i in y_test]
 
             feature_scores = pickle.load(open('feature_scores.pickle', 'rb'))
-            if idf_catbased:
+            if idf_method == 'cat':
                 X_train = pickle.load(open('X_train_catbased.pickle', 'rb'))
                 X_test = pickle.load(open('X_test_catbased.pickle', 'rb'))
                 tfidf = pickle.load(open('tfidf_catbased.pickle', 'rb'))
                 cv_result_file += '_catbased.csv'
+                print ('IDF is computed based on category')
             else:
                 X_train = pickle.load(open('X_train_userbased.pickle', 'rb'))
                 X_test = pickle.load(open('X_test_userbased.pickle', 'rb'))
                 tfidf = pickle.load(open('tfidf_userbased.pickle', 'rb'))
                 cv_result_file += '_userbased.csv'
+                print ('IDF is computed based on user')
 
         except Exception as e:
             print ('Cannot load feature files. Please run feature extraction first')
@@ -233,7 +239,6 @@ class UserAnalysis:
         sorted_ind = numpy.argsort(-feature_scores)
         sel_feature_portion = [1, 0.9, 0.5, 0.3, 0.1]
         if mode == 'model':
- 
             print ('Model selection on the training set (70% of data)')
             #Model selection on the training set
             models = dict()
@@ -285,13 +290,15 @@ class UserAnalysis:
                 if os.path.isfile(model_path):
                     model = pickle.load(open(model_path, 'rb'))
                 else:
+                    print ('Train model using all user  data')
                     #Train the final model using  all users data
                     X_train = numpy.concatenate((X_train.toarray(), X_test.toarray()), axis=0)
                     y_train += y_test
                     sel_features_train = numpy.delete(X_train, remove_feature_ind, axis=1)
                     model.fit(sel_features_train, y_train) 
                     pickle.dump(model, open(model_path, 'wb'))
-
+                
+                print ('Get user info')
                 api = self.get_tweet_api()
                 try:
                     user_profile = api.lookup_users(user_ids=[user_id])
@@ -324,7 +331,8 @@ if __name__ == '__main__':
     optparser.add_option('-t', dest='tweet_dir', default='tweet_ascii', help='Folder to store downloaded user  tweets')
     optparser.add_option('-m', dest='mode', help='running mode: download (download tweets of users in the dataset), feature (create feature matrix), model (model selection on the training set), test (evaluate model on the test set - default option), predict (predict class probability of a new user)', default='test')
     optparser.add_option('-u', dest='user_id', help='id of the user for prediction (in case mode=predict)', default=None)
+    optparser.add_option('-i', dest='idf_method', help='cat (compute IDF by category-based), user (user-based)', default='cat')
+
     (options, args) = optparser.parse_args()
     user = UserAnalysis(options.home_dir, options.tweet_dir)
-    idf_catbased = True
-    user.run(options.mode, options.user_id, idf_catbased)
+    user.run(options.mode, options.user_id, options.idf_method)
