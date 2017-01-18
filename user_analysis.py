@@ -6,8 +6,6 @@ import  pickle
 import os
 import string
 import re
-#from nltk.corpus import stopwords
-from nltk.tokenize import word_tokenize
 from sklearn.feature_extraction.text import CountVectorizer
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.feature_extraction.text import TfidfTransformer
@@ -21,7 +19,6 @@ from sklearn.model_selection import train_test_split
 from optparse import OptionParser
 import preprocessor
 import pandas
-import ipdb
 import time # standard lib
 import tweepy
 from tweepy import OAuthHandler
@@ -57,13 +54,14 @@ class UserAnalysis:
         try:
             new_tweets = api.user_timeline(screen_name = screen_name,count=200)
         except Exception as e:
-            print ('Error with user ' + screen_name)
+            print ('Error processing user ' + screen_name)
             print (e)
             fout.close()
             return 
 
         #keep grabbing tweets until there are no tweets left to grab
         while len(new_tweets) > 0:
+
             outtweets = [[tweet.id_str, tweet.created_at, tweet.text.encode('ascii', errors='ignore')] for tweet in new_tweets]
             writer.writerows(outtweets)
             
@@ -71,10 +69,9 @@ class UserAnalysis:
             oldest = new_tweets[-1].id - 1
             #all subsiquent requests use the max_id param to prevent duplicates
             try:
+                print ('Downloading from tweet id ' + str(oldest))
                 new_tweets = api.user_timeline(screen_name=screen_name,count=200,max_id=oldest)
             except Exception as e:
-                print ('Error ' + screen_name)
-                print (e)
                 break
                 
         fout.close()
@@ -269,7 +266,7 @@ class UserAnalysis:
             model = SVC(kernel='linear', C=1, probability=True)
 
             if mode == 'test':
-                print ('Test on 30% of data')
+                print ('Train on 70% of the data and test on 30% of the data')
                 sel_features_train = numpy.delete(X_train.toarray(), remove_feature_ind, axis=1)
                 model.fit(sel_features_train, y_train) 
                 sel_features_test = numpy.delete(X_test.toarray(), remove_feature_ind, axis=1)
