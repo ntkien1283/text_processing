@@ -7,15 +7,22 @@ The code can be run as follow (use python3) python3 user_analysis.py -m [mode] -
 + test  (train on the training set and evaluate on the test set)
 + predict  (to predict the probability of each class for a user)
 - user_id: the id of the user to be predicted
+
 Examples:
+
 To download tweet datas:
-To extract features:
-To perform model selection:
-To evaluate the model on the test dataset: To predict the class of a user with id:
 Python3 user_analysis.py -m download
+
+To extract features:
 Python3 user_analysis.py -m feature
+
+To perform model selection:
 Python3 user_analysis.py -m model
+
+To evaluate the model on the test dataset: 
 Python3 user_analysis.py -m test
+
+To predict the class of a user with id:
 Python3 user_analysis.py -m predict -u 4872354465
 
 See summary.pdf for more details
